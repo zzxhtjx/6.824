@@ -15,15 +15,34 @@ import "strconv"
 //
 
 type ExampleArgs struct {
-	X int
+	X 			int
 }
 
 type ExampleReply struct {
-	Y int
+	Y 			int
 }
 
 // Add your RPC definitions here.
+type RealArgs struct {
+	Tmp			int
+} 
 
+type RealReply struct {
+	Id  		 	int
+	Nfile			int
+	NReduce  		int
+	State			int
+	Filename 		string
+}
+
+type LockArgs struct {
+	Id 				int
+	Check 			int
+}
+
+type LockReply struct {
+	Ok				bool
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
