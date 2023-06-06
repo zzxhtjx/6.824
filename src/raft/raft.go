@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	// "fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,6 @@ import (
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
-
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -62,6 +62,10 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// add the state that you need
+	recvheart bool
+	curterm   int	// now the new leader term
+	state	  int	// 0 -> follow(persister), 1 ->condiater, 2->leader 
 }
 
 // return currentTerm and whether this server
@@ -71,6 +75,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	// call rpc to others as a heartbeat
+	term = rf.curterm
+	isleader = (rf.state == 2) 
 	return term, isleader
 }
 
@@ -128,17 +135,46 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term 	int
+	Id		int
+	Type	int			// 0 -> 表示的选举 1 -> 表示的是心跳	
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Ok		bool
 }
+
+// type AppendEntries struct {}
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Ok = false
+	
+	if args.Type == 0 {
+		if rf.recvheart {
+			return
+		}
+		if args.Term >= rf.curterm {
+			rf.curterm = args.Term
+			rf.recvheart = true
+			reply.Ok = true
+		}		
+	}
+	if args.Type == 1 {
+		//check 是否合法
+		if args.Term >= rf.curterm {
+			rf.curterm = args.Term
+			rf.recvheart = true
+			rf.state = 0
+			reply.Ok = true
+		}
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -221,12 +257,66 @@ func (rf *Raft) ticker() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
-
+		num := len(rf.peers)
+		if	rf.state == 2 {
+			//heartbeat
+			// deal with the read only from the client you have to know if the leader whether give up by heartbeat
+			cnt := 1
+			args := RequestVoteArgs{rf.curterm, rf.me, 1}
+			for i := 0; i < num; i++ {
+				if i == rf.me {
+					continue
+				}
+				var reply RequestVoteReply
+				ok := rf.sendRequestVote(i, &args, &reply)
+				if ok && reply.Ok {
+					cnt++
+				}
+			}
+			if cnt < (num + 1)/2 {
+				rf.mu.Lock()
+				rf.state = 0
+				rf.recvheart = false
+				rf.mu.Unlock()
+				continue
+			}
+			ms := (rand.Int63() % 100)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+			continue 
+		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		rf.recvheart = false
+		ms := 100 + (rand.Int63() % 150)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		if !rf.recvheart {
+			rf.mu.Lock()
+			// avoid dead lock
+			rf.state = 1
+			rf.mu.Unlock()
+			cnt := 1
+			arg := RequestVoteArgs{rf.curterm, rf.me, 0}
+			for i := 0; i < num; i++ {
+				if i == rf.me {
+					continue
+				}
+				var reply RequestVoteReply
+				ok := rf.sendRequestVote(i, &arg, &reply)
+				if ok && reply.Ok {
+					cnt++
+				}
+			}
+			DPrintln("elect : ", rf.me, "-", cnt)
+			if cnt >= (num + 1)/2 {
+				// fmt.Println(rf.me, " become the leader!!", cnt, " : ", num)
+				rf.mu.Lock()
+				rf.state = 2
+				rf.curterm++
+				rf.mu.Unlock()
+				continue 
+			}
+		}
 	}
 }
 
@@ -247,7 +337,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-
+	rf.mu.Lock()
+	rf.curterm = 1
+	rf.state = 0
+	rf.recvheart = false
+	rf.mu.Unlock()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -257,3 +351,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
+
+/*
+
+1. how to do if the rpc for election was loss
+2. if a leader never need to election again ever
+3. the rpc need to concurency ?
+4. remember to lock the data
+5. when should you free the lock?
+6. maybe it will hapend deadlock in the rpc for election
+7. if you recv the ask for election after the heartbeat
+8. init the state of heartbeat
+9. the state will be modify by the ticker yourself.So that it doesn't need a lock.
+10. when you read only you can use the heartbeat to check out if you was a leader now
+*/
